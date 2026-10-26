@@ -1,0 +1,177 @@
+import json
+import logging
+import sqlite3
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+CONFIG = ROOT / "config" / "settings.json"
+DATABASE = ROOT / "data" / "memory.db"
+LOGS = ROOT / "logs"
+
+
+def load_config():
+    with CONFIG.open(encoding="utf-8") as file:
+        return json.load(file)
+
+
+def setup_logging(level="INFO"):
+    LOGS.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(LOGS / "core.log", encoding="utf-8"),
+        ],
+    )
+    return logging.getLogger("personal_ai")
+
+
+def connect_db():
+    DATABASE.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(DATABASE, timeout=5)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
+    return db
+
+
+def initialize_database():
+    with connect_db() as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS memory (
+                id INTEGER PRIMARY KEY,
+                category TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                source TEXT NOT NULL DEFAULT 'explicit'
+            )
+        """)
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_category
+            ON memory(category)
+        """)
+
+
+def remember(content, category="fact", confidence=1.0,
+             source="explicit"):
+    content = content.strip()
+    category = category.strip()
+    if not content:
+        raise ValueError("Memory content cannot be empty")
+    if not category:
+        raise ValueError("Memory category cannot be empty")
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("Confidence must be between 0 and 1")
+    if source not in {"explicit", "inferred", "imported"}:
+        raise ValueError("Invalid memory source")
+
+    with connect_db() as db:
+        cursor = db.execute("""
+            INSERT INTO memory
+                (category, content, created_at, confidence, source)
+            VALUES (?, ?, ?, ?, ?)
+        """, (category, content, time.time(), confidence, source))
+        return cursor.lastrowid
+
+
+def recall(query="", category=None, limit=20):
+    if limit < 1 or limit > 100:
+        raise ValueError("Limit must be between 1 and 100")
+
+    sql = """
+        SELECT id, category, content, created_at, confidence, source
+        FROM memory
+        WHERE content LIKE ? ESCAPE '\\'
+    """
+    escaped = (
+        query.replace("\\", "\\\\")
+             .replace("%", "\\%")
+             .replace("_", "\\_")
+    )
+    params = [f"%{escaped}%"]
+
+    if category is not None:
+        sql += " AND category = ?"
+        params.append(category.strip())
+
+    sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+    params.append(limit)
+
+    with connect_db() as db:
+        return [dict(row) for row in db.execute(sql, params).fetchall()]
+
+
+def update_memory(memory_id, content=None, category=None,
+                  confidence=None, source=None):
+    fields = []
+    values = []
+
+    if content is not None:
+        content = content.strip()
+        if not content:
+            raise ValueError("Memory content cannot be empty")
+        fields.append("content = ?")
+        values.append(content)
+
+    if category is not None:
+        category = category.strip()
+        if not category:
+            raise ValueError("Memory category cannot be empty")
+        fields.append("category = ?")
+        values.append(category)
+
+    if confidence is not None:
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("Confidence must be between 0 and 1")
+        fields.append("confidence = ?")
+        values.append(confidence)
+
+    if source is not None:
+        if source not in {"explicit", "inferred", "imported"}:
+            raise ValueError("Invalid memory source")
+        fields.append("source = ?")
+        values.append(source)
+
+    if not fields:
+        raise ValueError("No changes supplied")
+
+    values.append(memory_id)
+    with connect_db() as db:
+        cursor = db.execute(
+            f"UPDATE memory SET {', '.join(fields)} WHERE id = ?",
+            values,
+        )
+        return cursor.rowcount == 1
+
+
+def forget(memory_id):
+    with connect_db() as db:
+        cursor = db.execute(
+            "DELETE FROM memory WHERE id = ?", (memory_id,)
+        )
+        return cursor.rowcount == 1
+
+
+def health_check():
+    with connect_db() as db:
+        db.execute("SELECT 1").fetchone()
+    return {"status": "healthy", "database": "available"}
+
+
+def main():
+    config = load_config()
+    logger = setup_logging(config["log_level"])
+    initialize_database()
+    logger.info("%s v%s starting",
+                config["service_name"], config["version"])
+    logger.info("Raw audio retention: %s",
+                config["store_raw_audio"])
+    logger.info("Health check: %s", health_check())
+    logger.info("Foundation service initialized successfully")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,39 @@
+
+"""Provider-independent language-model interface."""
+
+from abc import ABC, abstractmethod
+
+
+class LanguageModel(ABC):
+    @abstractmethod
+    def generate(self, user_message, memories):
+        """Generate a reply using a message and relevant memories."""
+        raise NotImplementedError
+
+
+class MockLanguageModel(LanguageModel):
+    """Deterministic model for development and testing."""
+
+    def generate(self, user_message, memories):
+        if not isinstance(user_message, str) or not user_message.strip():
+            raise ValueError("User message must be non-empty text")
+
+        if not isinstance(memories, list):
+            raise ValueError("Memories must be a list")
+
+        if memories:
+            context = "; ".join(
+                item["content"]
+                for item in memories
+            )
+            return (
+                f"Development reply. Your message was: "
+                f"{user_message.strip()}\n"
+                f"Relevant stored context: {context}"
+            )
+
+        return (
+            f"Development reply. Your message was: "
+            f"{user_message.strip()}\n"
+            "No relevant stored memories were found."
+        )

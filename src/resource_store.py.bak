@@ -1,0 +1,109 @@
+
+"""SQLite persistence for resource requests."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from core import database_session
+from resource_advisor import ResourceRequest, ResourceType, RequestStatus
+
+
+def initialize_resource_store():
+    """Create the resource-request table if it does not exist."""
+    with database_session() as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS resource_requests (
+                request_id TEXT PRIMARY KEY,
+                resource_type TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                expected_benefit TEXT NOT NULL,
+                estimated_cost TEXT NOT NULL,
+                privacy_impact TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'proposed',
+                created_at REAL NOT NULL
+            )
+        """)
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_requests_status
+            ON resource_requests(status)
+        """)
+
+
+def save_resource_request(request):
+    """Save a new request; never silently overwrite an existing request."""
+    import time
+
+    if not isinstance(request, ResourceRequest):
+        raise TypeError("request must be a ResourceRequest")
+
+    with database_session() as db:
+        db.execute("""
+            INSERT INTO resource_requests (
+                request_id, resource_type, reason, evidence,
+                expected_benefit, estimated_cost, privacy_impact,
+                status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            request.request_id,
+            request.resource_type.value,
+            request.reason,
+            request.evidence,
+            request.expected_benefit,
+            request.estimated_cost,
+            request.privacy_impact,
+            request.status.value,
+            time.time(),
+        ))
+
+    return request.request_id
+
+
+def get_resource_request(request_id):
+    """Retrieve one request by its identifier."""
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ValueError("request_id must be non-empty text")
+
+    with database_session() as db:
+        row = db.execute("""
+            SELECT request_id, resource_type, reason, evidence,
+                   expected_benefit, estimated_cost, privacy_impact,
+                   status, created_at
+            FROM resource_requests
+            WHERE request_id = ?
+        """, (request_id.strip(),)).fetchone()
+
+    return dict(row) if row is not None else None
+
+
+def list_resource_requests(status=None, limit=50):
+    """List recent requests, optionally filtered by status."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer between 1 and 100")
+
+    if status is not None:
+        if not isinstance(status, RequestStatus):
+            raise TypeError("status must be a RequestStatus")
+
+    sql = """
+        SELECT request_id, resource_type, reason, evidence,
+               expected_benefit, estimated_cost, privacy_impact,
+               status, created_at
+        FROM resource_requests
+    """
+    params = []
+
+    if status is not None:
+        sql += " WHERE status = ?"
+        params.append(status.value)
+
+    sql += " ORDER BY created_at DESC, request_id DESC LIMIT ?"
+    params.append(limit)
+
+    with database_session() as db:
+        return [
+            dict(row)
+            for row in db.execute(sql, params).fetchall()
+        ]

@@ -1,0 +1,7 @@
+{
+  "service_name": "personal-ai",
+  "version": "0.1.0",
+  "offline_first": true,
+  "store_raw_audio": false,
+  "log_level": "INFO"
+}

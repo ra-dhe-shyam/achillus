@@ -1,0 +1,92 @@
+
+import sys
+import tempfile
+import unittest
+import sqlite3
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import core
+
+
+class CoreTests(unittest.TestCase):
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.test_db = Path(self.temp_dir.name) / "memory.db"
+        self.db_patch = patch.object(core, "DATABASE", self.test_db)
+        self.db_patch.start()
+        core.initialize_database()
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_config(self):
+        config = core.load_config()
+        self.assertTrue(config["offline_first"])
+        self.assertFalse(config["store_raw_audio"])
+
+    def test_database_initialization(self):
+        with sqlite3.connect(self.test_db) as db:
+            tables = {
+                row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        self.assertIn("memory", tables)
+
+    def test_health_check(self):
+        result = core.health_check()
+        self.assertEqual(result["status"], "healthy")
+        self.assertEqual(result["database"], "available")
+
+    def test_remember_and_recall(self):
+        memory_id = core.remember(
+            "Prefers offline-first AI", category="preference"
+        )
+        results = core.recall(category="preference")
+        self.assertTrue(any(
+            item["id"] == memory_id
+            and item["content"] == "Prefers offline-first AI"
+            for item in results
+        ))
+
+    def test_update_memory(self):
+        memory_id = core.remember("Old value")
+        self.assertTrue(core.update_memory(
+            memory_id, content="Updated value"
+        ))
+        results = core.recall(query="Updated value")
+        self.assertTrue(any(
+            item["id"] == memory_id for item in results
+        ))
+
+    def test_forget_memory(self):
+        memory_id = core.remember("Temporary memory")
+        self.assertTrue(core.forget(memory_id))
+        self.assertFalse(core.forget(memory_id))
+        self.assertFalse(any(
+            item["id"] == memory_id for item in core.recall()
+        ))
+
+    def test_category_filter(self):
+        core.remember("A preference", category="preference")
+        core.remember("A fact", category="fact")
+        results = core.recall(category="preference")
+        self.assertTrue(results)
+        self.assertTrue(all(
+            item["category"] == "preference" for item in results
+        ))
+
+    def test_memory_persistence(self):
+        memory_id = core.remember("Persistence marker")
+        results = core.recall(query="Persistence marker")
+        self.assertTrue(any(
+            item["id"] == memory_id for item in results
+        ))
+
+
+if __name__ == "__main__":
+    unittest.main()

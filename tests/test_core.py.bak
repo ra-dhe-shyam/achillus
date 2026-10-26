@@ -1,0 +1,39 @@
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import core
+
+class CoreTests(unittest.TestCase):
+    def test_config(self):
+        config = core.load_config()
+        self.assertTrue(config["offline_first"])
+        self.assertFalse(config["store_raw_audio"])
+
+    def test_database_initialization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            test_db = Path(directory) / "memory.db"
+            with patch.object(core, "DATABASE", test_db):
+                core.initialize_database()
+                with __import__("sqlite3").connect(test_db) as db:
+                    tables = {
+                        row[0] for row in db.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        )
+                    }
+                self.assertIn("memory", tables)
+
+    def test_health_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            test_db = Path(directory) / "memory.db"
+            with patch.object(core, "DATABASE", test_db):
+                core.initialize_database()
+                result = core.health_check()
+                self.assertEqual(result["status"], "healthy")
+                self.assertEqual(result["database"], "available")
+
+if __name__ == "__main__":
+    unittest.main()
